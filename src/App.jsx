@@ -7,13 +7,13 @@ import { getFirestore, collection, addDoc, serverTimestamp, query, where, onSnap
 // -------------------------------------------------------------
 // 1. LOGO CONFIGURATION
 // -------------------------------------------------------------
-const LOGO_URL = "https://cdn-icons-png.flaticon.com/512/3898/3898150.png"; // Placeholder URL for image logo
+const LOGO_URL = ""; // Image removed by user request
 
 // ==========================================
 // 🔧 CONFIGURATION (PRODUCTION ONLY - USES RENDER/LOCAL .ENV)
 // ==========================================
 
-// This configuration pulls values from the Render Environment Variables (VITE_...)
+// 🔴 IMPORTANT: This configuration pulls values from the Render Environment Variables (VITE_...)
 const FIREBASE_CONFIG = { 
     apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
     authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
@@ -38,7 +38,6 @@ try {
         auth = getAuth(app);
         db = getFirestore(app);
     } else {
-        // In production, this means environment variables are missing
         console.error("Firebase Initialization Failed: API Key is missing. Check VITE_FIREBASE_API_KEY.");
     }
 } catch (e) {
@@ -49,15 +48,16 @@ try {
 const appId = 'nsumon_translator_v1';
 
 const MonToEngTranslator = () => {
+  // Main Translation State
   const [inputText, setInputText] = useState('');
-  const [outputJson, setOutputJson] = useState(null); 
+  const [outputJson, setOutputJson] = useState(null); // Stores the parsed JSON output
   const [isLoading, setIsLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState('');
   const [user, setUser] = useState(null);
-  const [isAuthReady, setIsAuthReady] = useState(false); 
+  const [isAuthReady, setIsAuthReady] = useState(false); // State to track if Auth is complete
   
-  // Admin State
+  // Correction/Admin State
   const [showSuggestModal, setShowSuggestModal] = useState(false);
   const [suggestMon, setSuggestMon] = useState('');
   const [suggestEng, setSuggestEng] = useState('');
@@ -68,14 +68,14 @@ const MonToEngTranslator = () => {
   const [pendingSuggestions, setPendingSuggestions] = useState([]);
   const [approvedGlossary, setApprovedGlossary] = useState([]);
 
-  // Helper: Detect Language
+  // --- Utility Functions ---
   const detectLanguage = (text) => {
-    if (!text) return 'Detecting...';
+    // Check for Mon/Myanmar unicode range: \u1000-\u109F and extended \uAA60-\uAA7F
     const monRegex = /[\u1000-\u109F\uAA60-\uAA7F]/;
     return monRegex.test(text) ? 'Mon' : 'English';
   };
-
-  // 1. Auth
+  
+  // 1. Initialize Auth FIRST
   useEffect(() => {
     if (!auth) {
         setIsAuthReady(true);
@@ -99,19 +99,46 @@ const MonToEngTranslator = () => {
     return () => unsubscribe();
   }, []);
 
-  // 2. Data Listeners
+  // 2. Listeners - ONLY run when 'user' is authenticated
   useEffect(() => {
     if (!user || !db || !isAuthReady) return; 
-    const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'approved_glossary'));
-    const unsub = onSnapshot(q, (s) => setApprovedGlossary(s.docs.map(d => ({ id: d.id, ...d.data() }))));
-    return () => unsub();
+
+    const qGlossary = query(collection(db, 'artifacts', appId, 'public', 'data', 'approved_glossary'));
+    const unsubGlossary = onSnapshot(qGlossary, 
+      (snapshot) => {
+        const terms = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setApprovedGlossary(terms);
+      },
+      (error) => {
+        console.log("Glossary sync paused");
+      }
+    );
+
+    return () => {
+        unsubGlossary();
+    };
   }, [user, isAuthReady]); 
 
+  // 3. Admin Listeners
   useEffect(() => {
     if (!user || !isAdmin || !db || !isAuthReady) return;
-    const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'suggestions'), where("status", "==", "pending"));
-    const unsub = onSnapshot(q, (s) => setPendingSuggestions(s.docs.map(d => ({ id: d.id, ...d.data() }))));
-    return () => unsub();
+
+    const qPending = query(
+        collection(db, 'artifacts', appId, 'public', 'data', 'suggestions'), 
+        where("status", "==", "pending")
+    );
+    
+    const unsubPending = onSnapshot(qPending, 
+      (snapshot) => {
+        const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setPendingSuggestions(list);
+      },
+      (error) => {
+         console.log("Pending list sync paused");
+      }
+    );
+
+    return () => unsubPending();
   }, [user, isAdmin, isAuthReady]);
 
   const saveTranslationToHistory = async (input, outputJson) => {
@@ -134,7 +161,7 @@ const MonToEngTranslator = () => {
 
     setIsLoading(true);
     setError('');
-    setOutputJson(null);
+    setOutputJson(null); // Clear previous output
     
     const apiKey = GEMINI_API_KEY; 
     
@@ -152,55 +179,61 @@ const MonToEngTranslator = () => {
       const targetLang = isMonInput ? 'English' : 'Mon (Unicode)';
 
       const glossaryContext = approvedGlossary.length > 0 
-        ? `COMMUNITY VERIFIED GLOSSARY: ${approvedGlossary.map(t => `${t.mon} = ${t.eng}`).join('\n')}`
+        ? `COMMUNITY VERIFIED GLOSSARY (PRIORITIZE THESE):
+           ${approvedGlossary.map(t => `${t.mon} = ${t.eng}`).join('\n')}`
         : '';
       
       let systemInstruction;
 
       if (isMonInput) {
         // MON -> ENGLISH PROMPT
-        systemInstruction = `You are "Ramanya," an AI translator specializing in the Mon language.
+        systemInstruction = `You are "Ramanya," an AI translator specializing in the Mon language. You possess deep knowledge of Mon grammar and culture.
         Task: Translate the provided Mon input (Unicode) into high-quality, natural, fluent English.
         
         RULES:
-        1. Format: MUST return ONLY a single, valid JSON object following the specified schema.
+        1. Grammar: Ensure correct English grammar and idiom usage.
+        2. Format: MUST return ONLY a single, valid JSON object following the specified schema.
+        3. Notes: Use the 'notes' field for any cultural context or grammatical points (e.g., "(Context: This refers to the Mon new year.)").
         
         JSON SCHEMA: {"source_language": "Mon", "translation": "...", "romanization": null, "notes": "..."}`;
       } else {
         // ENGLISH -> MON PROMPT
-        systemInstruction = `You are "Ramanya," an expert Mon linguist.
+        systemInstruction = `You are an expert Mon linguist, historian, and native speaker of the Mon language (Bhasa Mon).
         Task: Translate the provided English input into high-quality, formal Mon (Unicode standard).
         
         GUIDELINES:
-        1. Tone: Use a formal, polite, and literary tone (လိက်).
-        2. Grammar: Follow Mon sentence structure strictly (Subject-Object-Verb).
-        3. Vocabulary: Use Pali-derived Mon words for formal/academic concepts.
+        1. Tone: Use a formal, polite, and literary tone (လိက်) suitable for official and educational documents.
+        2. Grammar: Follow Mon sentence structure strictly (usually Subject-Object-Verb). Ensure particles are used naturally.
+        3. Vocabulary: Use Pali-derived Mon words for formal/academic concepts (like ပရေၚ်ပညာ).
         4. Format: MUST return ONLY a single, valid JSON object following the specified schema.
         
         JSON SCHEMA: {"source_language": "English", "translation": "...", "romanization": "...", "notes": null}`;
       }
+
+
+      const payload = {
+        contents: [{ parts: [{ text: `Input text to translate from ${sourceLang} to ${targetLang}:\n"${inputText}"` }] }],
+        systemInstruction: { parts: [{ text: `${systemInstruction}\n\nCONTEXT:\n${baseKnowledge}\n${glossaryContext}` }] },
+        generationConfig: {
+            responseMimeType: "application/json",
+            responseSchema: {
+                type: "OBJECT",
+                properties: {
+                    source_language: { type: "STRING" },
+                    translation: { type: "STRING" },
+                    romanization: { type: ["STRING", "NULL"] },
+                    notes: { type: ["STRING", "NULL"] }
+                }
+            }
+        }
+      };
 
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: `Input text to translate from ${sourceLang} to ${targetLang}:\n"${inputText}"` }] }],
-            systemInstruction: { parts: [{ text: `${systemInstruction}\n\nCONTEXT:\n${glossaryContext}` }] },
-            generationConfig: {
-                responseMimeType: "application/json",
-                responseSchema: {
-                    type: "OBJECT",
-                    properties: {
-                        source_language: { type: "STRING" },
-                        translation: { type: "STRING" },
-                        romanization: { type: ["STRING", "NULL"] },
-                        notes: { type: ["STRING", "NULL"] }
-                    }
-                }
-            }
-          }),
+          body: JSON.stringify(payload),
         }
       );
 
@@ -209,12 +242,16 @@ const MonToEngTranslator = () => {
       const data = await response.json();
       const rawJsonText = data.candidates?.[0]?.content?.parts?.[0]?.text;
       
-      if (!rawJsonText) throw new Error("AI returned no content.");
+      if (!rawJsonText) {
+          throw new Error("AI returned no content.");
+      }
       
       let parsedJson;
       try {
+          // Attempt direct parse first
           parsedJson = JSON.parse(rawJsonText);
       } catch (e) {
+          // Attempt to extract JSON from surrounding markdown/text
           const jsonMatch = rawJsonText.match(/\{[\s\S]*\}/);
           if (jsonMatch) {
               parsedJson = JSON.parse(jsonMatch[0]);
@@ -235,7 +272,7 @@ const MonToEngTranslator = () => {
   };
 
   // -------------------------------------------------------------
-  // UI Logic
+  // UI Improvement Logic - Renders output based on JSON structure
   // -------------------------------------------------------------
   const renderFormattedOutput = useMemo(() => {
     if (!outputJson || outputJson.translation === undefined) return null;
@@ -243,8 +280,12 @@ const MonToEngTranslator = () => {
     const isMonOutput = outputJson.source_language === 'English';
     const primaryText = outputJson.translation || "Translation not provided.";
     const secondaryNote = outputJson.notes || outputJson.romanization;
+    const secondaryLabel = outputJson.notes ? "Context:" : "Romanization:";
     
+    // Clean up primary text by removing asterisks (if LLM uses old format)
     const cleanedPrimary = primaryText.replace(/\*\*/g, '').trim();
+
+    // Check if the primary text contains an alternative format (e.g., / or line break)
     const primaryLines = cleanedPrimary.split(/[\r\n/]+/g).filter(t => t.trim().length > 0);
     const mainTranslation = primaryLines[0];
     const alternativeLines = primaryLines.slice(1);
@@ -278,9 +319,12 @@ const MonToEngTranslator = () => {
         </>
     );
   }, [outputJson]);
+  // -------------------------------------------------------------
 
   const handleOpenSuggest = () => {
-    const isMonOutput = outputJson?.source_language === 'English';
+    // Determine Mon and English content based on output direction
+    const isMonOutput = outputJson.source_language === 'English';
+    
     setSuggestMon(isMonOutput ? outputJson.translation : inputText);
     setSuggestEng(isMonOutput ? inputText : outputJson.translation);
     setShowSuggestModal(true);
@@ -288,56 +332,121 @@ const MonToEngTranslator = () => {
 
   const submitSuggestion = async () => {
     if (!suggestMon || !suggestEng) return;
-    if (!user || !db) { alert("Database not connected."); return; }
-    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'suggestions'), {
-        mon: suggestMon, eng: suggestEng, userId: user.uid, status: 'pending', timestamp: serverTimestamp()
-    });
-    setShowSuggestModal(false);
-    alert("Submitted!");
+    if (!user || !db) { 
+        alert("Authentication is not ready. Please wait a moment."); 
+        return; 
+    }
+    try {
+        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'suggestions'), {
+            mon: suggestMon,
+            eng: suggestEng,
+            userId: user.uid,
+            status: 'pending',
+            timestamp: serverTimestamp()
+        });
+        alert("Suggestion submitted! Admin will review it.");
+        setShowSuggestModal(false);
+    } catch (e) {
+        console.error("Error submitting:", e);
+        alert("Error submitting. Please try again.");
+    }
   };
 
   const handleAdminLogin = async (e) => {
     e.preventDefault();
-    if (!auth) return;
     try {
         if (adminEmail === ADMIN_EMAIL_SECRET && adminPassword === ADMIN_PASSWORD_SECRET) {
-            setIsAdmin(true); setShowAdminLogin(false);
+            setIsAdmin(true);
+            setShowAdminLogin(false);
         } else {
             await signInWithEmailAndPassword(auth, adminEmail, adminPassword);
-            setIsAdmin(true); setShowAdminLogin(false);
+            setIsAdmin(true);
+            setShowAdminLogin(false);
         }
-    } catch (err) { alert("Login Failed"); }
+    } catch (err) {
+        alert("Login failed. Check your email/password.");
+    }
   };
 
   const handleApprove = async (item) => {
-    if (!user || !db) return;
-    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'approved_glossary'), { mon: item.mon, eng: item.eng, approvedBy: user.uid, timestamp: serverTimestamp() });
-    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'suggestions', item.id), { status: 'approved' });
+    if (!user) return;
+    try {
+        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'approved_glossary'), {
+            mon: item.mon,
+            eng: item.eng,
+            approvedBy: user.uid,
+            timestamp: serverTimestamp()
+        });
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'suggestions', item.id), {
+            status: 'approved'
+        });
+    } catch (e) { console.error(e); }
   };
-  const handleReject = async (id) => { if (user && db) await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'suggestions', id), { status: 'rejected' }); };
-  const handleCopy = () => { if (!outputJson?.translation) return; navigator.clipboard.writeText(outputJson.translation); setCopied(true); setTimeout(() => setCopied(false), 2000); };
-  const handleClear = () => { setInputText(''); setOutputJson(null); setError(''); };
 
-  if (showAdminLogin) return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
-        <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md">
-            <h2 className="text-2xl font-bold mb-4 flex items-center gap-2"><Shield className="text-blue-600"/> Admin Login</h2>
-            <form onSubmit={handleAdminLogin} className="space-y-4">
-                <input className="w-full p-3 border rounded-lg" placeholder="Email" value={adminEmail} onChange={e=>setAdminEmail(e.target.value)}/>
-                <input className="w-full p-3 border rounded-lg" type="password" placeholder="Password" value={adminPassword} onChange={e=>setAdminPassword(e.target.value)}/>
-                <div className="flex gap-2"><button type="button" onClick={()=>setShowAdminLogin(false)} className="flex-1 p-3 text-slate-500">Cancel</button><button className="flex-1 p-3 bg-blue-600 text-white rounded-lg font-bold">Login</button></div>
-            </form>
+  const handleReject = async (id) => {
+    if (!user) return;
+    try {
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'suggestions', id), {
+            status: 'rejected'
+        });
+    } catch (e) { console.error(e); }
+  };
+
+  const handleCopy = () => {
+    if (!outputText) return;
+    // Copy the original cleaned output text, not the formatted JSX elements
+    const textToCopy = outputText.replace(/^Output:\s*/i, '').trim().replace(/[\r\n/]+/g, ' / ');
+    navigator.clipboard.writeText(textToCopy);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleClear = () => {
+    setInputText('');
+    setOutputText('');
+    setError('');
+  };
+
+  if (showAdminLogin) {
+    return (
+        <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl p-6 max-w-md w-full">
+                <h2 className="text-2xl font-bold mb-6 text-slate-800 flex items-center gap-2">
+                    <Shield className="text-blue-600"/> Admin Login
+                </h2>
+                <form onSubmit={handleAdminLogin} className="space-y-4">
+                    <input type="email" placeholder="Admin Email" className="w-full p-3 border rounded-lg" value={adminEmail} onChange={e => setAdminEmail(e.target.value)} />
+                    <input type="password" placeholder="Password" className="w-full p-3 border rounded-lg" value={adminPassword} onChange={e => setAdminPassword(e.target.value)} />
+                    <div className="flex gap-2">
+                        <button type="button" onClick={() => setShowAdminLogin(false)} className="flex-1 p-3 text-slate-600 font-medium">Cancel</button>
+                        <button type="submit" className="flex-1 p-3 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700">Login</button>
+                    </div>
+                </form>
+            </div>
         </div>
-    </div>
-  );
+    );
+  }
 
-  if (!isAuthReady) return <div className="min-h-screen flex items-center justify-center text-slate-500">Loading App...</div>;
+  if (!isAuthReady) {
+      return (
+          <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center">
+              <div className="flex flex-col items-center">
+                  <div className="w-12 h-12 border-4 border-slate-200 border-t-blue-500 rounded-full animate-spin mb-3"></div>
+                  <p className="text-slate-600 font-medium">Loading App and Connecting to Database...</p>
+              </div>
+          </div>
+      );
+  }
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-800 font-sans selection:bg-blue-100 selection:text-blue-900 w-full">
       <nav className="bg-white border-b border-slate-200 sticky top-0 z-30">
         <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
           <div className="flex items-center gap-4"> 
+            {/* Logo Image */}
+            <div className="relative h-10 w-10 overflow-hidden rounded-xl shadow-lg shadow-blue-500/20 bg-white mr-2">
+               <img src={LOGO_URL} alt="MT Logo" className="w-full h-full object-cover p-1" />
+            </div>
             {/* MT NSUMON Text Logo (Same visual size as image) */}
             <div className="flex items-center space-x-2 py-1.5">
               <h1 className="font-bold text-2xl tracking-tight text-slate-900">
@@ -419,7 +528,7 @@ const MonToEngTranslator = () => {
                 <div className="flex flex-col h-[300px] md:h-[400px] bg-slate-50/30 relative">
                     <div className="p-4 md:p-6 flex justify-between items-center bg-slate-50/80 border-b border-slate-100">
                         <span className="text-xs font-bold uppercase tracking-widest px-3 py-1 rounded-full bg-indigo-100 text-indigo-700">
-                            Output: {outputJson ? (outputJson.source_language === 'Mon' ? 'English' : 'Mon') : 'N/A'}
+                            Output: {outputJson ? outputJson.source_language === 'Mon' ? 'English' : 'Mon' : 'N/A'}
                         </span>
                         <div className="flex gap-2">
                             {outputJson && (<button onClick={handleOpenSuggest} className="flex items-center gap-1 px-2 py-1 text-xs font-bold text-orange-500 hover:bg-orange-50 rounded"><Edit3 size={14}/> Fix</button>)}
