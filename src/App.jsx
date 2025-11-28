@@ -161,34 +161,21 @@ const MonToEngTranslator = () => {
 
     setIsLoading(true);
     setError('');
-    setOutputJson(null); // Clear previous output
+    setOutputJson(null);
 
     const apiKey = GEMINI_API_KEY;
+    const baseKnowledge = "";  // <--- FIXED
 
-    // Check if API key is available
-    if (!apiKey) {
-      setError("API Key is missing. Please check VITE_GEMINI_API_KEY in your environment.");
-      setIsLoading(false);
-      return;
-    }
+    console.log("GEMINI KEY:", apiKey);
+    console.log("FIREBASE CONFIG:", FIREBASE_CONFIG);
 
     try {
-      const inputLang = detectLanguage(inputText);
-      const isMonInput = inputLang === 'Mon';
-      const sourceLang = isMonInput ? 'Mon' : 'English';
-      const targetLang = isMonInput ? 'English' : 'Mon (Unicode)';
+        const inputLang = detectLanguage(inputText);
+        const isMonInput = inputLang === 'Mon';
+        const sourceLang = isMonInput ? 'Mon' : 'English';
+        const targetLang = isMonInput ? 'English' : 'Mon (Unicode)';
 
-      const glossaryContext = approvedGlossary.length > 0
-        ? `COMMUNITY VERIFIED GLOSSARY (PRIORITIZE THESE):
-     ${approvedGlossary.map(t => `${t.mon} = ${t.eng}`).join('\n')}`
-        : '';
-
-      const baseKnowledge = `
-      # Mon Translator – Base Knowledge
-      This prevents the "baseKnowledge is not defined" crash.
-      `;
-
-      let systemInstruction;
+        let systemInstruction = "..."; // your existing prompt logic
 
 
       if (isMonInput) {
@@ -218,69 +205,45 @@ const MonToEngTranslator = () => {
 
 
       const payload = {
-        contents: [{ parts: [{ text: `Input text to translate from ${sourceLang} to ${targetLang}:\n"${inputText}"` }] }],
-        systemInstruction: { parts: [{ text: `${systemInstruction}\n\nCONTEXT:\n${baseKnowledge}\n${glossaryContext}` }] },
-        generationConfig: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: "OBJECT",
-            properties: {
-              source_language: { type: "STRING" },
-              translation: { type: "STRING" },
-              romanization: { type: ["STRING", "NULL"] },
-              notes: { type: ["STRING", "NULL"] }
+            contents: [
+                { parts: [{ text: inputText }] }
+            ],
+            systemInstruction: {
+                parts: [{ text: `${systemInstruction}` }]
+            },
+            generationConfig: {
+                responseMimeType: "application/json"
             }
-          }
+        };
+
+        const response = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, // <--- FIXED
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            }
+        );
+
+        if (!response.ok) {
+            console.error("Google API error:", await response.text());
+            throw new Error("Translation failed");
         }
-      };
 
-      console.log("GEMINI KEY:", GEMINI_API_KEY);
-      console.log("FIREBASE CONFIG:", FIREBASE_CONFIG);
+        const data = await response.json();
+        const rawJsonText = data.candidates?.[0]?.content?.parts?.[0]?.text;
 
+        if (!rawJsonText) throw new Error("AI returned no content");
 
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        }
-      );
-
-      if (!response.ok) throw new Error('Translation failed');
-
-      const data = await response.json();
-      const rawJsonText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-      if (!rawJsonText) {
-        throw new Error("AI returned no content.");
-      }
-
-      let parsedJson;
-      try {
-        // Attempt direct parse first
-        parsedJson = JSON.parse(rawJsonText);
-      } catch (e) {
-        // Attempt to extract JSON from surrounding markdown/text
-        const jsonMatch = rawJsonText.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          parsedJson = JSON.parse(jsonMatch[0]);
-        } else {
-          throw new Error("Invalid JSON format received from AI.");
-        }
-      }
-
-      setOutputJson(parsedJson);
-      saveTranslationToHistory(inputText, parsedJson);
+        setOutputJson(JSON.parse(rawJsonText));
 
     } catch (err) {
-      setError('Connection or Parsing Error. Check the API Key and ensure the output is valid JSON.');
-      console.error(err);
+        setError("Connection or Parsing Error");
+        console.error(err);
     } finally {
-      setIsLoading(false);
+        setIsLoading(false);
     }
-  };
-
+};
   // -------------------------------------------------------------
   // UI Improvement Logic - Renders output based on JSON structure
   // -------------------------------------------------------------
