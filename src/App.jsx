@@ -7,7 +7,7 @@ import { getFirestore, collection, addDoc, serverTimestamp, query, where, onSnap
 // -------------------------------------------------------------
 // 1. LOGO CONFIGURATION
 // -------------------------------------------------------------
-const LOGO_URL = ""; // Image removed by user request
+const LOGO_URL = "https://cdn-icons-png.flaticon.com/512/3898/3898150.png"; // Placeholder URL for image logo
 
 // ==========================================
 // 🔧 CONFIGURATION (PRODUCTION ONLY - USES RENDER/LOCAL .ENV)
@@ -177,18 +177,8 @@ const MonToEngTranslator = () => {
       const sourceLang = isMonInput ? 'Mon' : 'English';
       const targetLang = isMonInput ? 'English' : 'Mon (Unicode)';
 
-      const baseKnowledge = `
-      CORE VOCABULARY (Reference):
-      - Rabbit = ဗ္တာဲ (Btai)
-      - Turtle = လရုတ် (La-rut)
-      - Mother = မိ (Mi)
-      - Father = မအံက် (Maaik)
-      - Education = ပရေၚ်ပညာ (Paraing Panya)
-      `;
-
       const glossaryContext = approvedGlossary.length > 0 
-        ? `COMMUNITY VERIFIED GLOSSARY (PRIORITIZE THESE):
-           ${approvedGlossary.map(t => `${t.mon} = ${t.eng}`).join('\n')}`
+        ? `COMMUNITY VERIFIED GLOSSARY: ${approvedGlossary.map(t => `${t.mon} = ${t.eng}`).join('\n')}`
         : '';
       
       let systemInstruction;
@@ -218,30 +208,27 @@ const MonToEngTranslator = () => {
         JSON SCHEMA: {"source_language": "English", "translation": "...", "romanization": "...", "notes": null}`;
       }
 
-
-      const payload = {
-        contents: [{ parts: [{ text: `Input text to translate from ${sourceLang} to ${targetLang}:\n"${inputText}"` }] }],
-        systemInstruction: { parts: [{ text: `${systemInstruction}\n\nCONTEXT:\n${baseKnowledge}\n${glossaryContext}` }] },
-        generationConfig: {
-            responseMimeType: "application/json",
-            responseSchema: {
-                type: "OBJECT",
-                properties: {
-                    source_language: { type: "STRING" },
-                    translation: { type: "STRING" },
-                    romanization: { type: ["STRING", "NULL"] },
-                    notes: { type: ["STRING", "NULL"] }
-                }
-            }
-        }
-      };
-
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: `Input text to translate from ${sourceLang} to ${targetLang}:\n"${inputText}"` }] }],
+            systemInstruction: { parts: [{ text: `${systemInstruction}\n\nCONTEXT:\n${baseKnowledge}\n${glossaryContext}` }] },
+            generationConfig: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: "OBJECT",
+                    properties: {
+                        source_language: { type: "STRING" },
+                        translation: { type: "STRING" },
+                        romanization: { type: ["STRING", "NULL"] },
+                        notes: { type: ["STRING", "NULL"] }
+                    }
+                }
+            }
+          }),
         }
       );
 
@@ -254,7 +241,18 @@ const MonToEngTranslator = () => {
           throw new Error("AI returned no content.");
       }
       
-      const parsedJson = JSON.parse(rawJsonText);
+      let parsedJson;
+      try {
+          parsedJson = JSON.parse(rawJsonText);
+      } catch (e) {
+          const jsonMatch = rawJsonText.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+              parsedJson = JSON.parse(jsonMatch[0]);
+          } else {
+              throw new Error("Invalid JSON format received from AI.");
+          }
+      }
+
       setOutputJson(parsedJson);
       saveTranslationToHistory(inputText, parsedJson);
 
@@ -275,12 +273,8 @@ const MonToEngTranslator = () => {
     const isMonOutput = outputJson.source_language === 'English';
     const primaryText = outputJson.translation || "Translation not provided.";
     const secondaryNote = outputJson.notes || outputJson.romanization;
-    const secondaryLabel = outputJson.notes ? "Context:" : "Romanization:";
     
-    // Clean up primary text by removing asterisks (if LLM uses old format)
     const cleanedPrimary = primaryText.replace(/\*\*/g, '').trim();
-
-    // Check if the primary text contains an alternative format (e.g., / or line break)
     const primaryLines = cleanedPrimary.split(/[\r\n/]+/g).filter(t => t.trim().length > 0);
     const mainTranslation = primaryLines[0];
     const alternativeLines = primaryLines.slice(1);
@@ -317,9 +311,7 @@ const MonToEngTranslator = () => {
   // -------------------------------------------------------------
 
   const handleOpenSuggest = () => {
-    // Determine Mon and English content based on output direction
-    const isMonOutput = outputJson.source_language === 'English';
-    
+    const isMonOutput = outputJson?.source_language === 'English';
     setSuggestMon(isMonOutput ? outputJson.translation : inputText);
     setSuggestEng(isMonOutput ? inputText : outputJson.translation);
     setShowSuggestModal(true);
@@ -327,24 +319,12 @@ const MonToEngTranslator = () => {
 
   const submitSuggestion = async () => {
     if (!suggestMon || !suggestEng) return;
-    if (!user || !db) { 
-        alert("Authentication is not ready. Please wait a moment."); 
-        return; 
-    }
-    try {
-        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'suggestions'), {
-            mon: suggestMon,
-            eng: suggestEng,
-            userId: user.uid,
-            status: 'pending',
-            timestamp: serverTimestamp()
-        });
-        alert("Suggestion submitted! Admin will review it.");
-        setShowSuggestModal(false);
-    } catch (e) {
-        console.error("Error submitting:", e);
-        alert("Error submitting. Please try again.");
-    }
+    if (!user || !db) { alert("Database not connected."); return; }
+    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'suggestions'), {
+        mon: suggestMon, eng: suggestEng, userId: user.uid, status: 'pending', timestamp: serverTimestamp()
+    });
+    setShowSuggestModal(false);
+    alert("Submitted!");
   };
 
   const handleAdminLogin = async (e) => {
@@ -352,96 +332,43 @@ const MonToEngTranslator = () => {
     if (!auth) return;
     try {
         if (adminEmail === ADMIN_EMAIL_SECRET && adminPassword === ADMIN_PASSWORD_SECRET) {
-            setIsAdmin(true);
-            setShowAdminLogin(false);
+            setIsAdmin(true); setShowAdminLogin(false);
         } else {
             await signInWithEmailAndPassword(auth, adminEmail, adminPassword);
-            setIsAdmin(true);
-            setShowAdminLogin(false);
+            setIsAdmin(true); setShowAdminLogin(false);
         }
-    } catch (err) {
-        alert("Login failed. Check your email/password.");
-    }
+    } catch (err) { alert("Login Failed"); }
   };
 
   const handleApprove = async (item) => {
     if (!user || !db) return;
-    try {
-        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'approved_glossary'), {
-            mon: item.mon,
-            eng: item.eng,
-            approvedBy: user.uid,
-            timestamp: serverTimestamp()
-        });
-        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'suggestions', item.id), {
-            status: 'approved'
-        });
-    } catch (e) { console.error(e); }
+    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'approved_glossary'), { mon: item.mon, eng: item.eng, approvedBy: user.uid, timestamp: serverTimestamp() });
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'suggestions', item.id), { status: 'approved' });
   };
+  const handleReject = async (id) => { if (user && db) await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'suggestions', id), { status: 'rejected' }); };
+  const handleCopy = () => { if (!outputJson?.translation) return; navigator.clipboard.writeText(outputJson.translation); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+  const handleClear = () => { setInputText(''); setOutputJson(null); setError(''); };
 
-  const handleReject = async (id) => {
-    if (!user || !db) return;
-    try {
-        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'suggestions', id), {
-            status: 'rejected'
-        });
-    } catch (e) { console.error(e); }
-  };
-
-  const handleCopy = () => {
-    if (!outputJson || !outputJson.translation) return;
-    const textToCopy = outputJson.translation;
-    navigator.clipboard.writeText(textToCopy);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  const handleClear = () => {
-    setInputText('');
-    setOutputJson(null);
-    setError('');
-  };
-
-  if (showAdminLogin) {
-    return (
-        <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-2xl p-6 max-w-md w-full">
-                <h2 className="text-2xl font-bold mb-6 text-slate-800 flex items-center gap-2">
-                    <Shield className="text-blue-600"/> Admin Login
-                </h2>
-                <form onSubmit={handleAdminLogin} className="space-y-4">
-                    <input type="email" placeholder="Admin Email" className="w-full p-3 border rounded-lg" value={adminEmail} onChange={e => setAdminEmail(e.target.value)} />
-                    <input type="password" placeholder="Password" className="w-full p-3 border rounded-lg" value={adminPassword} onChange={e => setAdminPassword(e.target.value)} />
-                    <div className="flex gap-2">
-                        <button type="button" onClick={() => setShowAdminLogin(false)} className="flex-1 p-3 text-slate-600 font-medium">Cancel</button>
-                        <button type="submit" className="flex-1 p-3 bg-blue-600 text-white rounded-lg font-bold hover:-translate-y-0.5 transition-all">Login</button>
-                    </div>
-                </form>
-            </div>
+  if (showAdminLogin) return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
+        <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md">
+            <h2 className="text-2xl font-bold mb-4 flex items-center gap-2"><Shield className="text-blue-600"/> Admin Login</h2>
+            <form onSubmit={handleAdminLogin} className="space-y-4">
+                <input className="w-full p-3 border rounded-lg" placeholder="Email" value={adminEmail} onChange={e=>setAdminEmail(e.target.value)}/>
+                <input className="w-full p-3 border rounded-lg" type="password" placeholder="Password" value={adminPassword} onChange={e=>setAdminPassword(e.target.value)}/>
+                <div className="flex gap-2"><button type="button" onClick={()=>setShowAdminLogin(false)} className="flex-1 p-3 text-slate-500">Cancel</button><button className="flex-1 p-3 bg-blue-600 text-white rounded-lg font-bold">Login</button></div>
+            </form>
         </div>
-    );
-  }
+    </div>
+  );
 
-  if (!isAuthReady) {
-      return (
-          <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center">
-              <div className="flex flex-col items-center">
-                  <div className="w-12 h-12 border-4 border-slate-200 border-t-blue-500 rounded-full animate-spin mb-3"></div>
-                  <p className="text-slate-600 font-medium">Loading App and Connecting to Database...</p>
-              </div>
-          </div>
-      );
-  }
+  if (!isAuthReady) return <div className="min-h-screen flex items-center justify-center text-slate-500">Loading App...</div>;
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-800 font-sans selection:bg-blue-100 selection:text-blue-900 w-full">
       <nav className="bg-white border-b border-slate-200 sticky top-0 z-30">
         <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
           <div className="flex items-center gap-4"> 
-            {/* Logo Image */}
-            <div className="relative h-10 w-10 overflow-hidden rounded-xl shadow-lg shadow-blue-500/20 bg-white mr-2">
-               <img src={LOGO_URL} alt="MT Logo" className="w-full h-full object-cover p-1" />
-            </div>
             {/* MT NSUMON Text Logo (Same visual size as image) */}
             <div className="flex items-center space-x-2 py-1.5">
               <h1 className="font-bold text-2xl tracking-tight text-slate-900">
@@ -563,7 +490,7 @@ const MonToEngTranslator = () => {
                         <div><label className="text-xs font-bold text-slate-500">MON</label><input className="w-full p-3 border rounded-lg font-mon" value={suggestMon} onChange={e=>setSuggestMon(e.target.value)}/></div>
                         <div><label className="text-xs font-bold text-slate-500">ENGLISH</label><input className="w-full p-3 border rounded-lg" value={suggestEng} onChange={e=>setSuggestEng(e.target.value)}/></div>
                     </div>
-                    <div className="flex gap-3 mt-6"><button onClick={()=>setShowSuggestModal(false)} className="flex-1 p-3 text-slate-600 font-bold">Cancel</button><button onClick={submitSuggestion} className="flex-1 p-3 bg-blue-600 text-white rounded-lg font-bold">Submit</button></div>
+                    <div className="flex gap-3 mt-6"><button onClick={()=>setShowSuggestModal(false)} className="flex-1 p-3 text-slate-500">Cancel</button><button onClick={submitSuggestion} className="flex-1 p-3 bg-blue-600 text-white rounded-lg font-bold">Submit</button></div>
                 </div>
             </div>
         )}
