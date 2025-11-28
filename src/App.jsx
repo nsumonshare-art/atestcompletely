@@ -10,16 +10,11 @@ import { getFirestore, collection, addDoc, serverTimestamp, query, where, onSnap
 const LOGO_URL = "https://cdn-icons-png.flaticon.com/512/3898/3898150.png"; // Placeholder URL for image logo
 
 // ==========================================
-// 🔧 CONFIGURATION (HYBRID: SAFE FOR PREVIEW)
+// 🔧 CONFIGURATION (PRODUCTION ONLY - USES RENDER/LOCAL .ENV)
 // ==========================================
 
-// Sandbox environment check
-const IS_SANDBOX = typeof __firebase_config !== 'undefined';
-
-const FIREBASE_CONFIG = IS_SANDBOX ? (
-    // Sandbox config (Chat Box environment)
-    typeof __firebase_config === 'string' ? JSON.parse(__firebase_config) : __firebase_config
-) : { // Production Fallback config (uses VITE imports)
+// This configuration pulls values from the Render Environment Variables (VITE_...)
+const FIREBASE_CONFIG = { 
     apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
     authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
     projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
@@ -28,31 +23,34 @@ const FIREBASE_CONFIG = IS_SANDBOX ? (
     appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
 
-const GEMINI_API_KEY = IS_SANDBOX ? "" : import.meta.env.VITE_GEMINI_API_KEY;
-const ADMIN_EMAIL_SECRET = IS_SANDBOX ? "admin@nsumon.com" : import.meta.env.VITE_ADMIN_EMAIL; 
-const ADMIN_PASSWORD_SECRET = IS_SANDBOX ? "password123" : import.meta.env.VITE_ADMIN_PASSWORD;
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+const ADMIN_EMAIL_SECRET = import.meta.env.VITE_ADMIN_EMAIL; 
+const ADMIN_PASSWORD_SECRET = import.meta.env.VITE_ADMIN_PASSWORD;
 
 // ==========================================
 
 // Initialize Firebase (Error Handling Added)
 let app, auth, db;
 try {
+    // Only attempt initialization if API Key is available
     if (FIREBASE_CONFIG && FIREBASE_CONFIG.apiKey) {
         app = initializeApp(FIREBASE_CONFIG);
         auth = getAuth(app);
         db = getFirestore(app);
     } else {
-        console.warn("Firebase not initialized. Missing config.");
+        // In production, this means environment variables are missing
+        console.error("Firebase Initialization Failed: API Key is missing. Check VITE_FIREBASE_API_KEY.");
     }
 } catch (e) {
     console.error("Firebase Init Error:", e);
 }
 
+// FIX: Use a static, safe App ID
 const appId = 'nsumon_translator_v1';
 
 const MonToEngTranslator = () => {
   const [inputText, setInputText] = useState('');
-  const [outputJson, setOutputJson] = useState(null);
+  const [outputJson, setOutputJson] = useState(null); 
   const [isLoading, setIsLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState('');
@@ -79,13 +77,14 @@ const MonToEngTranslator = () => {
 
   // 1. Auth
   useEffect(() => {
-    if (!auth) { setIsAuthReady(true); return; }
+    if (!auth) {
+        setIsAuthReady(true);
+        return;
+    }
     const initAuth = async () => {
       try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-           await signInWithCustomToken(auth, __initial_auth_token);
-        } else if (!auth.currentUser) {
-           await signInAnonymously(auth);
+        if (!auth.currentUser) {
+            await signInAnonymously(auth);
         }
       } catch (err) {
         console.error("Auth Error:", err);
@@ -139,7 +138,8 @@ const MonToEngTranslator = () => {
     
     const apiKey = GEMINI_API_KEY; 
     
-    if (!IS_SANDBOX && !apiKey) {
+    // Check if API key is available
+    if (!apiKey) {
         setError("API Key is missing. Please check VITE_GEMINI_API_KEY in your environment.");
         setIsLoading(false);
         return;
@@ -154,18 +154,16 @@ const MonToEngTranslator = () => {
       const glossaryContext = approvedGlossary.length > 0 
         ? `COMMUNITY VERIFIED GLOSSARY: ${approvedGlossary.map(t => `${t.mon} = ${t.eng}`).join('\n')}`
         : '';
-
+      
       let systemInstruction;
 
       if (isMonInput) {
         // MON -> ENGLISH PROMPT
-        systemInstruction = `You are "Ramanya," an AI translator specializing in the Mon language. You possess deep knowledge of Mon grammar and culture.
+        systemInstruction = `You are "Ramanya," an AI translator specializing in the Mon language.
         Task: Translate the provided Mon input (Unicode) into high-quality, natural, fluent English.
         
         RULES:
-        1. Grammar: Ensure correct English grammar and idiom usage.
-        2. Format: MUST return ONLY a single, valid JSON object following the specified schema.
-        3. Notes: Use the 'notes' field for any cultural context or grammatical points (e.g., "(Context: This refers to the Mon new year.)").
+        1. Format: MUST return ONLY a single, valid JSON object following the specified schema.
         
         JSON SCHEMA: {"source_language": "Mon", "translation": "...", "romanization": null, "notes": "..."}`;
       } else {
@@ -174,9 +172,9 @@ const MonToEngTranslator = () => {
         Task: Translate the provided English input into high-quality, formal Mon (Unicode standard).
         
         GUIDELINES:
-        1. Tone: Use a formal, polite, and literary tone (လိက်) suitable for official and educational documents.
-        2. Grammar: Follow Mon sentence structure strictly (usually Subject-Object-Verb). Ensure particles are used naturally.
-        3. Vocabulary: Use Pali-derived Mon words for formal/academic concepts (like ပရေၚ်ပညာ).
+        1. Tone: Use a formal, polite, and literary tone (လိက်).
+        2. Grammar: Follow Mon sentence structure strictly (Subject-Object-Verb).
+        3. Vocabulary: Use Pali-derived Mon words for formal/academic concepts.
         4. Format: MUST return ONLY a single, valid JSON object following the specified schema.
         
         JSON SCHEMA: {"source_language": "English", "translation": "...", "romanization": "...", "notes": null}`;
@@ -421,7 +419,7 @@ const MonToEngTranslator = () => {
                 <div className="flex flex-col h-[300px] md:h-[400px] bg-slate-50/30 relative">
                     <div className="p-4 md:p-6 flex justify-between items-center bg-slate-50/80 border-b border-slate-100">
                         <span className="text-xs font-bold uppercase tracking-widest px-3 py-1 rounded-full bg-indigo-100 text-indigo-700">
-                            Output: {outputJson ? outputJson.source_language === 'Mon' ? 'English' : 'Mon' : 'N/A'}
+                            Output: {outputJson ? (outputJson.source_language === 'Mon' ? 'English' : 'Mon') : 'N/A'}
                         </span>
                         <div className="flex gap-2">
                             {outputJson && (<button onClick={handleOpenSuggest} className="flex items-center gap-1 px-2 py-1 text-xs font-bold text-orange-500 hover:bg-orange-50 rounded"><Edit3 size={14}/> Fix</button>)}
