@@ -10,11 +10,16 @@ import { getFirestore, collection, addDoc, serverTimestamp, query, where, onSnap
 const LOGO_URL = "https://cdn-icons-png.flaticon.com/512/3898/3898150.png"; // Placeholder URL for image logo
 
 // ==========================================
-// 🔧 CONFIGURATION (PRODUCTION ONLY - USES RENDER/LOCAL .ENV)
+// 🔧 CONFIGURATION (HYBRID: SAFE FOR PREVIEW)
 // ==========================================
 
-// 🔴 IMPORTANT: This configuration pulls values from the Render Environment Variables (VITE_...)
-const FIREBASE_CONFIG = { 
+// Sandbox environment check
+const IS_SANDBOX = typeof __firebase_config !== 'undefined';
+
+const FIREBASE_CONFIG = IS_SANDBOX ? (
+    // Sandbox config (Chat Box environment)
+    typeof __firebase_config === 'string' ? JSON.parse(__firebase_config) : __firebase_config
+) : { // Production Fallback config (uses VITE imports)
     apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
     authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
     projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
@@ -23,41 +28,38 @@ const FIREBASE_CONFIG = {
     appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
 
-const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
-const ADMIN_EMAIL_SECRET = import.meta.env.VITE_ADMIN_EMAIL; 
-const ADMIN_PASSWORD_SECRET = import.meta.env.VITE_ADMIN_PASSWORD;
+const GEMINI_API_KEY = IS_SANDBOX ? "" : import.meta.env.VITE_GEMINI_API_KEY;
+const ADMIN_EMAIL_SECRET = IS_SANDBOX ? "admin@nsumon.com" : import.meta.env.VITE_ADMIN_EMAIL; 
+const ADMIN_PASSWORD_SECRET = IS_SANDBOX ? "password123" : import.meta.env.VITE_ADMIN_PASSWORD;
 
 // ==========================================
 
 // Initialize Firebase (Error Handling Added)
 let app, auth, db;
 try {
-    // Only attempt initialization if API Key is available
     if (FIREBASE_CONFIG && FIREBASE_CONFIG.apiKey) {
         app = initializeApp(FIREBASE_CONFIG);
         auth = getAuth(app);
         db = getFirestore(app);
     } else {
-        console.error("Firebase Initialization Failed: API Key is missing. Check VITE_FIREBASE_API_KEY.");
+        console.warn("Firebase not initialized. Missing config.");
     }
 } catch (e) {
     console.error("Firebase Init Error:", e);
 }
 
-// FIX: Use a static, safe App ID
 const appId = 'nsumon_translator_v1';
 
 const MonToEngTranslator = () => {
-  // Main Translation State
   const [inputText, setInputText] = useState('');
-  const [outputJson, setOutputJson] = useState(null); // Stores the parsed JSON output
+  const [outputJson, setOutputJson] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState('');
   const [user, setUser] = useState(null);
-  const [isAuthReady, setIsAuthReady] = useState(false); // State to track if Auth is complete
+  const [isAuthReady, setIsAuthReady] = useState(false); 
   
-  // Correction/Admin State
+  // Admin State
   const [showSuggestModal, setShowSuggestModal] = useState(false);
   const [suggestMon, setSuggestMon] = useState('');
   const [suggestEng, setSuggestEng] = useState('');
@@ -68,23 +70,22 @@ const MonToEngTranslator = () => {
   const [pendingSuggestions, setPendingSuggestions] = useState([]);
   const [approvedGlossary, setApprovedGlossary] = useState([]);
 
-  // --- Utility Functions ---
+  // Helper: Detect Language
   const detectLanguage = (text) => {
-    // Check for Mon/Myanmar unicode range: \u1000-\u109F and extended \uAA60-\uAA7F
+    if (!text) return 'Detecting...';
     const monRegex = /[\u1000-\u109F\uAA60-\uAA7F]/;
     return monRegex.test(text) ? 'Mon' : 'English';
   };
-  
-  // 1. Initialize Auth FIRST
+
+  // 1. Auth
   useEffect(() => {
-    if (!auth) {
-        setIsAuthReady(true);
-        return;
-    }
+    if (!auth) { setIsAuthReady(true); return; }
     const initAuth = async () => {
       try {
-        if (!auth.currentUser) {
-            await signInAnonymously(auth);
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+           await signInWithCustomToken(auth, __initial_auth_token);
+        } else if (!auth.currentUser) {
+           await signInAnonymously(auth);
         }
       } catch (err) {
         console.error("Auth Error:", err);
@@ -99,46 +100,19 @@ const MonToEngTranslator = () => {
     return () => unsubscribe();
   }, []);
 
-  // 2. Listeners - ONLY run when 'user' is authenticated
+  // 2. Data Listeners
   useEffect(() => {
     if (!user || !db || !isAuthReady) return; 
-
-    const qGlossary = query(collection(db, 'artifacts', appId, 'public', 'data', 'approved_glossary'));
-    const unsubGlossary = onSnapshot(qGlossary, 
-      (snapshot) => {
-        const terms = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setApprovedGlossary(terms);
-      },
-      (error) => {
-        console.log("Glossary sync paused");
-      }
-    );
-
-    return () => {
-        unsubGlossary();
-    };
+    const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'approved_glossary'));
+    const unsub = onSnapshot(q, (s) => setApprovedGlossary(s.docs.map(d => ({ id: d.id, ...d.data() }))));
+    return () => unsub();
   }, [user, isAuthReady]); 
 
-  // 3. Admin Listeners
   useEffect(() => {
     if (!user || !isAdmin || !db || !isAuthReady) return;
-
-    const qPending = query(
-        collection(db, 'artifacts', appId, 'public', 'data', 'suggestions'), 
-        where("status", "==", "pending")
-    );
-    
-    const unsubPending = onSnapshot(qPending, 
-      (snapshot) => {
-        const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setPendingSuggestions(list);
-      },
-      (error) => {
-         console.log("Pending list sync paused");
-      }
-    );
-
-    return () => unsubPending();
+    const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'suggestions'), where("status", "==", "pending"));
+    const unsub = onSnapshot(q, (s) => setPendingSuggestions(s.docs.map(d => ({ id: d.id, ...d.data() }))));
+    return () => unsub();
   }, [user, isAdmin, isAuthReady]);
 
   const saveTranslationToHistory = async (input, outputJson) => {
@@ -161,11 +135,11 @@ const MonToEngTranslator = () => {
 
     setIsLoading(true);
     setError('');
-    setOutputJson(null); // Clear previous output
+    setOutputJson(null);
     
     const apiKey = GEMINI_API_KEY; 
     
-    if (!apiKey) {
+    if (!IS_SANDBOX && !apiKey) {
         setError("API Key is missing. Please check VITE_GEMINI_API_KEY in your environment.");
         setIsLoading(false);
         return;
@@ -180,7 +154,7 @@ const MonToEngTranslator = () => {
       const glossaryContext = approvedGlossary.length > 0 
         ? `COMMUNITY VERIFIED GLOSSARY: ${approvedGlossary.map(t => `${t.mon} = ${t.eng}`).join('\n')}`
         : '';
-      
+
       let systemInstruction;
 
       if (isMonInput) {
@@ -196,7 +170,7 @@ const MonToEngTranslator = () => {
         JSON SCHEMA: {"source_language": "Mon", "translation": "...", "romanization": null, "notes": "..."}`;
       } else {
         // ENGLISH -> MON PROMPT
-        systemInstruction = `You are an expert Mon linguist, historian, and native speaker of the Mon language (Bhasa Mon).
+        systemInstruction = `You are "Ramanya," an expert Mon linguist.
         Task: Translate the provided English input into high-quality, formal Mon (Unicode standard).
         
         GUIDELINES:
@@ -215,7 +189,7 @@ const MonToEngTranslator = () => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             contents: [{ parts: [{ text: `Input text to translate from ${sourceLang} to ${targetLang}:\n"${inputText}"` }] }],
-            systemInstruction: { parts: [{ text: `${systemInstruction}\n\nCONTEXT:\n${baseKnowledge}\n${glossaryContext}` }] },
+            systemInstruction: { parts: [{ text: `${systemInstruction}\n\nCONTEXT:\n${glossaryContext}` }] },
             generationConfig: {
                 responseMimeType: "application/json",
                 responseSchema: {
@@ -237,9 +211,7 @@ const MonToEngTranslator = () => {
       const data = await response.json();
       const rawJsonText = data.candidates?.[0]?.content?.parts?.[0]?.text;
       
-      if (!rawJsonText) {
-          throw new Error("AI returned no content.");
-      }
+      if (!rawJsonText) throw new Error("AI returned no content.");
       
       let parsedJson;
       try {
@@ -265,7 +237,7 @@ const MonToEngTranslator = () => {
   };
 
   // -------------------------------------------------------------
-  // UI Improvement Logic - Renders output based on JSON structure
+  // UI Logic
   // -------------------------------------------------------------
   const renderFormattedOutput = useMemo(() => {
     if (!outputJson || outputJson.translation === undefined) return null;
@@ -308,7 +280,6 @@ const MonToEngTranslator = () => {
         </>
     );
   }, [outputJson]);
-  // -------------------------------------------------------------
 
   const handleOpenSuggest = () => {
     const isMonOutput = outputJson?.source_language === 'English';
